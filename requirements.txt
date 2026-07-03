@@ -1,0 +1,7 @@
+gymnasium>=0.28
+numpy>=1.21
+matplotlib>=3.4
+torch>=1.13
+jupyterlab>=3.0
+notebook>=6.4
+ipykernel
