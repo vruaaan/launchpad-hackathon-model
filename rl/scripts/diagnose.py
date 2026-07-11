@@ -5,7 +5,13 @@ It tells you exactly why the agent is stuck at -75.
 import numpy as np
 import collections
 from functools import partial
-from classes.env import IDX_TO_BLOCK 
+
+try:
+    # When running as a package module: `python -m rl.scripts.diagnose`
+    from rl.classes.env import IDX_TO_BLOCK, legal_next_blocks as lnb
+except ModuleNotFoundError:
+    # When running with cwd=`rl`: `python scripts/diagnose.py`
+    from classes.env import IDX_TO_BLOCK, legal_next_blocks as lnb
 
 # ── paste your imports here ───────────────────────────────────────────────────
 # from subqueries_v4 import (
@@ -56,7 +62,6 @@ def diagnose(agent, env, n_episodes=200):
                 terminated and reward > 0
             )
 
-            from classes.env import legal_next_blocks as lnb
             # re-read built_seq before this step to check legality
             # (approximate — built_seq may have been updated)
             syntax_ok = block in lnb(frame.built_seq[:-1] if block_correct else frame.built_seq)
