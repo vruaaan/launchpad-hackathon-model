@@ -212,23 +212,19 @@ def make_problem(blocks, subqueries=None):
     return {"blocks": blocks, "subqueries": subqueries or {}}
 
 
-def generate_problem_bank(max_depth):
+def generate_problem_bank():
     final = []
     subquery_pool = []
     for select_item, join, where, groupby, orderby, limit in itertools.product(
-    SELECT_ITEMS, JOINS, WHERE_VARIANTS, GROUPBY_VARIANTS, ORDERBY_VARIANTS, LIMIT_VARIANTS
-):
+    SELECT_ITEMS, JOINS, WHERE_VARIANTS, GROUPBY_VARIANTS, ORDERBY_VARIANTS, LIMIT_VARIANTS):
         blocks = assemble(select_item, join, where, groupby, orderby, limit)
         final.append(make_problem(blocks))
-    for select_item, where in itertools.product(
-        SELECT_ITEMS, WHERE_VARIANTS[:6]  # skip the AND/OR-chained variants, keep it simple
-    ):
+    for select_item, where in itertools.product(SELECT_ITEMS, WHERE_VARIANTS[:6]):  # skip the AND/OR-chained variants, keep it simple
         blocks = assemble(select_item, None, where, None, None, None)
         subquery_pool.append(make_problem(blocks))
     random.seed(0)  # deterministic bank generation
     for select_item, join, groupby, orderby, limit in itertools.product(
-        SELECT_ITEMS, JOINS, GROUPBY_VARIANTS, ORDERBY_VARIANTS[:2], LIMIT_VARIANTS[:2]
-    ):
+        SELECT_ITEMS, JOINS, GROUPBY_VARIANTS, ORDERBY_VARIANTS[:2], LIMIT_VARIANTS[:2]):
         where = ["WHERE", "COLUMN", "IN", "SUBQUERY_START", "SUBQUERY_END"]
         blocks = assemble(select_item, join, where, groupby, orderby, limit)
         subquery_pos = blocks.index("SUBQUERY_START")
@@ -243,4 +239,4 @@ def generate_problem_bank(max_depth):
         final.append(make_problem(outer_blocks, subqueries={7: mid}))
     return final, subquery_pool
 
-PROBLEM_BANK, SIMPLE_SUBQUERY_POOL = generate_problem_bank(MAX_DEPTH)
+PROBLEM_BANK, SIMPLE_SUBQUERY_POOL = generate_problem_bank()
