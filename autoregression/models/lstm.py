@@ -119,14 +119,24 @@ class RNNAgent:
     # -----------------------------------------------------------------
     # Evaluation
     # -----------------------------------------------------------------
-    def evaluate(self, sequences, collate_fn, batch_size=32):
+    def evaluate(self, sequences, collate_fn, batch_size=32, n=1, verbose=False):
         """Returns perplexity on a held-out list of token-id tensors."""
         loader = DataLoader(
             SQLSeqDataset(sequences), batch_size=batch_size, shuffle=False,
             collate_fn=collate_fn,
         )
-        return self.run_epoch(loader, train=False)
- 
+        pplx_lst = []
+        for _ in range (0,n):
+            pplx = self.run_epoch(loader, train=False)
+            if n == 1:
+                return pplx
+            else:
+                pplx_lst.append(pplx)
+        avg_pplx = sum(pplx_lst)/len(pplx_lst)
+        if verbose:
+            print(f"Average perplexity over {n} runs: {avg_pplx}")
+        return avg_pplx
+
     # -----------------------------------------------------------------
     # Sampling / generation
     # -----------------------------------------------------------------
