@@ -8,10 +8,12 @@ import torch.optim as optim
 import gymnasium as gym
 
 try:
-    from classes.agents import Agent
-    from classes.buffers import ReplayBuffer
-    from classes.adjenv import N_BLOCKS, MAX_SEQUENCE_LEN, legal_mask_from_obs_batch
-except ImportError:
+    # Recommended (repo root): `import rl.custom.customdqn`
+    from rl.classes.agents import Agent
+    from rl.classes.buffers import ReplayBuffer
+    from rl.classes.adjenv import N_BLOCKS, MAX_SEQUENCE_LEN, legal_mask_from_obs_batch
+except ModuleNotFoundError:
+    # Fallback (cwd=rl): `import custom.customdqn` or running files directly
     from classes.agents import Agent
     from classes.buffers import ReplayBuffer
     from classes.adjenv import N_BLOCKS, MAX_SEQUENCE_LEN, legal_mask_from_obs_batch
