@@ -47,8 +47,8 @@ assumed.
 import itertools
 import random
 from collections import defaultdict
-from problembank2 import SIMPLE_SUBQUERY_POOL
-from dataprep import EOS_ID, SOS_ID, TOKEN_TO_ID, flatten
+from autoregression.data.problembank2 import SIMPLE_SUBQUERY_POOL
+from autoregression.data.dataprep import EOS_ID, SOS_ID, TOKEN_TO_ID, flatten
 
 import torch
 SELECT_ITEMS = [
@@ -118,7 +118,7 @@ def assemble(select_item, join, where, groupby, orderby, limit):
 def make_problem(blocks, subqueries=None):
     return {"blocks": blocks, "subqueries": subqueries or {}}
 
-from dataprep import EOS_ID, SOS_ID, TOKEN_TO_ID, flatten
+# (imported above from autoregression.data.dataprep)
 
 KNOBS = {
     "select": SELECT_ITEMS,

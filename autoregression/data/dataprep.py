@@ -10,11 +10,11 @@ from autoregression.data.problembank import BLOCK_TYPES
 # Vocabulary: block types + three special tokens.
 # ---------------------------------------------------------------------------
 SPECIALS = ["<PAD>", "<SOS>", "<EOS>"]
-VOCAB = SPECIALS + list(BLOCK_TYPES)
-TOKEN_TO_ID = {tok: i for i, tok in enumerate(VOCAB)}
+TOKENS = SPECIALS + list(BLOCK_TYPES)
+N_TOKENS = len(TOKENS)
+TOKEN_TO_ID = {tok: i for i, tok in enumerate(TOKENS)}
 ID_TO_TOKEN = {i: tok for tok, i in TOKEN_TO_ID.items()}
 PAD_ID, SOS_ID, EOS_ID = TOKEN_TO_ID["<PAD>"], TOKEN_TO_ID["<SOS>"], TOKEN_TO_ID["<EOS>"]
-VOCAB_SIZE = len(VOCAB)
 
 
 def flatten(problem):
@@ -41,7 +41,7 @@ def build_dataset():
     return sequences
 
 
-class SQLSequenceDataset(torch.utils.data.Dataset):
+class SQLSeqDataset(torch.utils.data.Dataset):
     def __init__(self, sequences):
         self.sequences = sequences
 
@@ -65,7 +65,7 @@ def collate(batch):
 tensorlst = build_dataset()
 random.seed(0)
 torch.manual_seed(0)
-dataset = SQLSequenceDataset(tensorlst)
+dataset = SQLSeqDataset(tensorlst)
 n_val = max(1, int(0.05 * len(dataset)))
 train_set, val_set = torch.utils.data.random_split(
         dataset, [len(dataset) - n_val, n_val]
