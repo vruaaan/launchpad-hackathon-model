@@ -17,6 +17,8 @@ HORIZONTAL_BLOCKS = [
     "COLUMN",           # <column name>, optionally alias-qualified
     "STAR",              # (*)
     "TABLE",              # <table name>, optionally aliased
+    "AS",
+    "ALIAS",
     "IS_NULL",
     "IS_NOT_NULL",
     "OPERATOR",           # dropdown: =, >=, <=, <, >, !=, <>
@@ -64,21 +66,30 @@ TRANSITIONS = {
         "STAR": "select_item_done",
     },
     "select_after_agg": {"COLUMN": "select_item_done", "STAR": "select_item_done"},
-    "select_item_done": {"FROM": "after_from"},
+
+    # Optional alias for the SELECT item (e.g., COLUMN AS ALIAS)
+    "select_item_done": {"AS": "select_after_as", "FROM": "after_from"},
+    "select_after_as": {"ALIAS": "select_item_aliased"},
+    "select_item_aliased": {"FROM": "after_from"},
+
     "after_from": {"TABLE": "main_table_done"},
 
     # --- After FROM TABLE: everything else is optional from here ---
     "main_table_done": {
+        "AS": "from_after_as",
         "JOIN": "after_join",
         "WHERE": "where_cond_open",
         "GROUP_BY": "after_groupby",
         "ORDER_BY": "after_orderby",
         "LIMIT": "after_limit",
     },
+    "from_after_as": {"ALIAS": "main_table_done"},
 
     # --- JOIN ---
     "after_join": {"TABLE": "join_table_done"},
-    "join_table_done": {"ON": "after_on"},
+    "join_table_done": {"AS": "join_after_as", "ON": "after_on"},
+    "join_after_as": {"ALIAS": "join_table_done_aliased"},
+    "join_table_done_aliased": {"ON": "after_on"},
     "after_on": {"COLUMN": "on_lhs_done"},
     "on_lhs_done": {"OPERATOR": "on_op_done"},
     "on_op_done": {"COLUMN": "join_done"},

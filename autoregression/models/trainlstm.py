@@ -20,8 +20,45 @@ if __package__ is None or __package__ == "":
     sys.path.insert(0, str(repo_root))
 
 from autoregression.models.lstm import RNNAgent
-from autoregression.data.datasplit import training_tensors, validation_tensors
+from autoregression.data.datasplit import (
+    cursor_prefix_inputs,
+    cursor_prefix_next_ids,
+    incorrect_corruption_tensors,
+    incorrect_prefix_inputs,
+    incorrect_prefix_next_ids,
+    training_tensors,
+    validation_tensors,
+)
 from autoregression.data.dataprep import ID_TO_TOKEN, collate
+
+import torch
+
+
+@torch.no_grad()
+def next_token_topk_accuracy(agent, prefix_inputs, next_token_ids, k=5, batch_size=64):
+    agent.model.eval()
+    device = agent.device
+    correct = 0
+    total = 0
+    for i in range(0, len(prefix_inputs), batch_size):
+        batch = prefix_inputs[i : i + batch_size]
+        targets = next_token_ids[i : i + batch_size]
+        if not batch:
+            continue
+        lengths = [t.numel() for t in batch]
+        max_len = max(lengths)
+        input_ids = torch.full((len(batch), max_len), agent.pad_id, dtype=torch.long)
+        for r, t in enumerate(batch):
+            input_ids[r, : t.numel()] = t
+        input_ids = input_ids.to(device)
+
+        logits, _hidden = agent.model(input_ids)
+        last_logits = logits[torch.arange(len(batch), device=device), torch.tensor([l - 1 for l in lengths], device=device)]
+        topk = torch.topk(last_logits, k=min(k, last_logits.size(-1)), dim=-1).indices.cpu().tolist()
+        for pred_ids, gold in zip(topk, targets):
+            correct += int(gold in pred_ids)
+        total += len(targets)
+    return correct / max(1, total)
 
 rnn = RNNAgent(
         emb_dim=128,
@@ -34,6 +71,15 @@ rnn.fit(training_tensors, validation_tensors, collate_fn=collate, epochs=20)
  
 val_ppl = rnn.evaluate(validation_tensors, collate_fn=collate)
 print(f"final val ppl: {val_ppl:.3f}")
+
+prefix_top5 = next_token_topk_accuracy(rnn, incorrect_prefix_inputs, incorrect_prefix_next_ids, k=5)
+print(f"incorrect-prefix next-token top5 acc: {prefix_top5:.3f}")
+
+cursor_top5 = next_token_topk_accuracy(rnn, cursor_prefix_inputs, cursor_prefix_next_ids, k=5)
+print(f"cursor-insertion next-token top5 acc: {cursor_top5:.3f}")
+
+corrupt_ppl = rnn.evaluate(incorrect_corruption_tensors, collate_fn=collate)
+print(f"incorrect-corruption ppl: {corrupt_ppl:.3f}")
  
 print(rnn.sample(id_to_token=ID_TO_TOKEN, max_len=40))
 rnn.save("lstm.pth")

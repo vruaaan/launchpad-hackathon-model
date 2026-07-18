@@ -2,6 +2,8 @@ gymnasium>=0.28
 numpy>=1.21
 matplotlib>=3.4
 torch>=1.13
+onnx>=1.14
+onnxscript>=0.1
 jupyterlab>=3.0
 notebook>=6.4
 ipykernel

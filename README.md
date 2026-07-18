@@ -80,8 +80,9 @@ python rl/scripts/diagnose.py
 
 The autoregression side turns each generated problem into a flat token stream:
 
-- tokens are SQL “block types” plus special tokens: `<PAD>`, `<SOS>`, `<EOS>`
+- tokens are SQL “block types” plus special tokens: `<PAD>`, `<SOS>`, `<EOS>`, `<CURSOR>`
 - nested subqueries are depth-first spliced between `SUBQUERY_START` / `SUBQUERY_END`
+- cursor-aware examples teach insertion suggestions, e.g. `SELECT <CURSOR> FROM TABLE` can suggest the missing select item
 
 Train/evaluate/sample an LSTM:
 
@@ -95,7 +96,52 @@ Train/evaluate/sample a Transformer:
 python autoregression/models/traintrans.py
 ```
 
-Both scripts print validation perplexity and a sampled sequence, and save a `.pth` checkpoint into the working directory.
+Both scripts print validation perplexity, incomplete-prefix top-k accuracy, cursor-insertion top-k accuracy, corruption perplexity, and a sampled sequence. They save `.pth` checkpoints into the working directory.
+
+## Exporting for the web app
+
+After training, export the checkpoint to ONNX:
+
+```bash
+python autoregression/export_lstm_onyx.py
+python autoregression/export_trans_onyx.py
+```
+
+Use the single-file output for the app when available:
+
+- LSTM: `lstm_single.onnx`
+- Transformer: `transformer_single.onnx`
+
+Also hand off `tokens.json`. The ONNX file and `tokens.json` must come from the same training run/vocabulary, because token IDs are learned by position. Adding `<CURSOR>` changes the vocab size and shifts SQL block IDs, so old `.pth` / `.onnx` files should not be mixed with the new `tokens.json`.
+
+## Web app import contract
+
+The web app should load the ONNX model with `onnxruntime` or `onnxruntime-web` and feed one tensor:
+
+- input name: `input_ids`
+- dtype: `int64`
+- shape: `[batch, time]`
+- output: `logits` with shape `[batch, time, vocab]`
+
+For normal autocomplete, encode the current block prefix as:
+
+```text
+[<SOS>, ...block token ids]
+```
+
+For insertion autocomplete, insert `<CURSOR>` at the UI cursor position and feed tokens through the cursor:
+
+```text
+SELECT <CURSOR> FROM TABLE
+```
+
+becomes:
+
+```text
+[<SOS>, SELECT, <CURSOR>]
+```
+
+Then read `logits[0, -1, :]`, take top-k IDs, map them back through `tokens.json`, and optionally filter out special tokens plus grammar-illegal suggestions. See `ENCODING_HANDOFF.md` for the detailed app-side encoding notes.
 
 ## Notes / gotchas
 

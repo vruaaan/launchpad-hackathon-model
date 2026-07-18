@@ -41,9 +41,13 @@ rules as a top-level one -- there's no separate "subquery grammar."
  
 import itertools
 import random
- 
+
 def make_problem(blocks, subqueries=None):
     return {"blocks": blocks, "subqueries": subqueries or {}}
+
+
+def _deepcopy_problem(problem):
+    return make_problem(list(problem["blocks"]), subqueries={k: v for k, v in problem.get("subqueries", {}).items()})
  
 # ---------------------------------------------------------------------------
 # 1. General SQL grammar -- a finite-state machine over block tokens.
@@ -68,21 +72,30 @@ TRANSITIONS = {
         "STAR": "select_item_done",
     },
     "select_after_agg": {"COLUMN": "select_item_done", "STAR": "select_item_done"},
-    "select_item_done": {"FROM": "after_from"},
+
+    # Optional alias for the SELECT item (e.g., COLUMN AS ALIAS)
+    "select_item_done": {"AS": "select_after_as", "FROM": "after_from"},
+    "select_after_as": {"ALIAS": "select_item_aliased"},
+    "select_item_aliased": {"FROM": "after_from"},
+
     "after_from": {"TABLE": "main_table_done"},
  
     # --- After FROM TABLE: everything else is optional from here ---
     "main_table_done": {
+        "AS": "from_after_as",
         "JOIN": "after_join",
         "WHERE": "where_cond_open",
         "GROUP_BY": "after_groupby",
         "ORDER_BY": "after_orderby",
         "LIMIT": "after_limit",
     },
+    "from_after_as": {"ALIAS": "main_table_done"},
  
     # --- JOIN ---
     "after_join": {"TABLE": "join_table_done"},
-    "join_table_done": {"ON": "after_on"},
+    "join_table_done": {"AS": "join_after_as", "ON": "after_on"},
+    "join_after_as": {"ALIAS": "join_table_done_aliased"},
+    "join_table_done_aliased": {"ON": "after_on"},
     "after_on": {"COLUMN": "on_lhs_done"},
     "on_lhs_done": {"OPERATOR": "on_op_done"},
     "on_op_done": {"COLUMN": "join_done"},
@@ -176,10 +189,21 @@ SELECT_ITEMS = [
     ["AGG_FUNC", "COLUMN"],
     ["AGG_FUNC", "STAR"],
 ]
+
+SELECT_ALIASES = [
+    None,
+    ["AS", "ALIAS"],
+]
  
 JOINS = [
     None,
     ["JOIN", "TABLE", "ON", "COLUMN", "OPERATOR", "COLUMN"],
+    ["JOIN", "TABLE", "AS", "ALIAS", "ON", "COLUMN", "OPERATOR", "COLUMN"],
+]
+
+FROM_ALIASES = [
+    None,
+    ["AS", "ALIAS"],
 ]
  
 # Where-variants WITHOUT a subquery (those are generated separately below,
@@ -223,8 +247,13 @@ LIMIT_VARIANTS = [
 ]
  
  
-def assemble(select_item, join, where, groupby, orderby, limit):
-    blocks = ["SELECT"] + select_item + ["FROM", "TABLE"]
+def assemble(select_item, select_alias, from_alias, join, where, groupby, orderby, limit):
+    blocks = ["SELECT"] + select_item
+    if select_alias:
+        blocks += select_alias
+    blocks += ["FROM", "TABLE"]
+    if from_alias:
+        blocks += from_alias
     for part in (join, where, groupby, orderby, limit):
         if part:
             blocks += part
@@ -245,24 +274,137 @@ def validate_problem(problem, path="root"):
         raise AssertionError(f"[{path}] target ends in a non-terminal state: {blocks}")
     for idx, sub in problem.get("subqueries", {}).items():
         validate_problem(sub, path=f"{path}->sub@{idx}")
- 
+
+
+def validate_prefixes_only(problem, path="root"):
+    """
+    Sanity-check a *partial* or intentionally incomplete sequence.
+
+    Ensures every prefix is legal under the grammar, but does NOT require the
+    final state to be terminal/complete. This is useful for autocomplete
+    training where the model must handle in-progress queries.
+    """
+    blocks = problem["blocks"]
+    for i in range(1, len(blocks) + 1):
+        prefix = blocks[:i]
+        try:
+            replay(prefix)
+        except KeyError:
+            raise AssertionError(f"[{path}] illegal prefix under grammar: {prefix}")
+    for idx, sub in problem.get("subqueries", {}).items():
+        validate_prefixes_only(sub, path=f"{path}->sub@{idx}")
+
+
+def _truncate_problem(problem, rng, min_len=1):
+    blocks = problem["blocks"]
+    if len(blocks) <= min_len:
+        return None
+    cut = rng.randrange(min_len, len(blocks))
+    truncated = make_problem(blocks[:cut], subqueries={})
+    # If we cut before/inside a subquery marker, drop subqueries entirely for the partial.
+    return truncated
+
+
+def _corrupt_blocks(blocks, rng):
+    """
+    Produce an *incorrect* sequence that is still SQL-ish.
+
+    The output may be:
+      - incomplete-but-legal (e.g. truncation handled elsewhere),
+      - illegal (e.g. SELECT FROM),
+      - or structurally odd (e.g. duplicate WHERE).
+    """
+    if not blocks:
+        return blocks
+
+    patterns = []
+
+    # 1) Delete a "slot" token if present (common missing-block failure mode).
+    slot_tokens = {"COLUMN", "TABLE", "VALUE", "OPERATOR", "STAR"}
+    deletable = [i for i, t in enumerate(blocks) if t in slot_tokens]
+    if deletable:
+        i = rng.choice(deletable)
+        patterns.append(blocks[:i] + blocks[i + 1 :])
+
+    # 2) Swap a nearby pair (horizontal mis-ordering).
+    if len(blocks) >= 2:
+        i = rng.randrange(0, len(blocks) - 1)
+        swapped = list(blocks)
+        swapped[i], swapped[i + 1] = swapped[i + 1], swapped[i]
+        patterns.append(swapped)
+
+    # 3) Duplicate a clause keyword (stray extra block).
+    keywords = [i for i, t in enumerate(blocks) if t in {"WHERE", "JOIN", "GROUP_BY", "ORDER_BY", "LIMIT"}]
+    if keywords:
+        i = rng.choice(keywords)
+        patterns.append(blocks[: i + 1] + [blocks[i]] + blocks[i + 1 :])
+
+    # 4) Force the exact bad forms the user mentioned, when possible.
+    if "SELECT" in blocks and "FROM" in blocks:
+        patterns.append(["SELECT", "FROM"])
+        patterns.append(["SELECT", "FROM", "WHERE"])
+
+    return rng.choice(patterns) if patterns else blocks
+
+
+def generate_incorrect_problem_bank(
+    valid_bank,
+    *,
+    n_truncations=None,
+    n_corruptions=None,
+    seed=0,
+):
+    """
+    Build a bank of intentionally incorrect / incomplete queries for autocomplete.
+
+    - Truncations are always legal prefixes of valid queries (incomplete SQL).
+    - Corruptions introduce missing/extra/mis-ordered tokens (may be illegal).
+
+    Returns a list of problems in the same shape as PROBLEM_BANK entries.
+    """
+    rng = random.Random(seed)
+    if n_truncations is None:
+        n_truncations = len(valid_bank) // 2
+    if n_corruptions is None:
+        n_corruptions = len(valid_bank) - n_truncations
+
+    truncations = []
+    corruptions = []
+
+    # Truncated (incomplete but grammar-legal prefixes)
+    for _ in range(n_truncations):
+        base = rng.choice(valid_bank)
+        truncated = _truncate_problem(base, rng, min_len=1)
+        if truncated is not None:
+            # Prefix legality should hold by construction; still cheap to assert.
+            validate_prefixes_only(truncated, path="incorrect_trunc")
+            truncations.append(truncated)
+
+    # Corrupted (missing blocks / mis-order / duplicates; may be illegal)
+    for _ in range(n_corruptions):
+        base = rng.choice(valid_bank)
+        corrupted_blocks = _corrupt_blocks(base["blocks"], rng)
+        corruptions.append(make_problem(corrupted_blocks, subqueries={}))
+
+    return truncations, corruptions
+
 
 def generate_problem_bank():
     final = []
     subquery_pool = []
-    for select_item, join, where, groupby, orderby, limit in itertools.product( #Main combinatorial sweep, no subqueries yet
-    SELECT_ITEMS, JOINS, WHERE_VARIANTS, GROUPBY_VARIANTS, ORDERBY_VARIANTS, LIMIT_VARIANTS):
-        blocks = assemble(select_item, join, where, groupby, orderby, limit)
+    for select_item, select_alias, from_alias, join, where, groupby, orderby, limit in itertools.product( #Main combinatorial sweep, no subqueries yet
+    SELECT_ITEMS, SELECT_ALIASES, FROM_ALIASES, JOINS, WHERE_VARIANTS, GROUPBY_VARIANTS, ORDERBY_VARIANTS, LIMIT_VARIANTS):
+        blocks = assemble(select_item, select_alias, from_alias, join, where, groupby, orderby, limit)
         final.append(make_problem(blocks))
-    for select_item, where in itertools.product( # skip the AND/OR-chained variants, keep it simple for subquery
-    SELECT_ITEMS, WHERE_VARIANTS[:6]):
-        blocks = assemble(select_item, None, where, None, None, None)
+    for select_item, select_alias, from_alias, where in itertools.product( # skip the AND/OR-chained variants, keep it simple for subquery
+    SELECT_ITEMS, SELECT_ALIASES, FROM_ALIASES, WHERE_VARIANTS[:6]):
+        blocks = assemble(select_item, select_alias, from_alias, None, where, None, None, None)
         subquery_pool.append(make_problem(blocks))
     random.seed(0)  # deterministic bank generation
-    for select_item, join, groupby, orderby, limit in itertools.product( #level 1 nesting of subqueries
-    SELECT_ITEMS, JOINS, GROUPBY_VARIANTS, ORDERBY_VARIANTS[:2], LIMIT_VARIANTS[:2]):
+    for select_item, select_alias, from_alias, join, groupby, orderby, limit in itertools.product( #level 1 nesting of subqueries
+    SELECT_ITEMS, SELECT_ALIASES, FROM_ALIASES, JOINS, GROUPBY_VARIANTS, ORDERBY_VARIANTS[:2], LIMIT_VARIANTS[:2]):
         where = ["WHERE", "COLUMN", "IN", "SUBQUERY_START", "SUBQUERY_END"]
-        blocks = assemble(select_item, join, where, groupby, orderby, limit)
+        blocks = assemble(select_item, select_alias, from_alias, join, where, groupby, orderby, limit)
         subquery_pos = blocks.index("SUBQUERY_START")
         nested = random.choice(subquery_pool)
         final.append(make_problem(blocks, subqueries={subquery_pos: nested}))
@@ -278,3 +420,8 @@ def generate_problem_bank():
 
 
 PROBLEM_BANK, SIMPLE_SUBQUERY_POOL = generate_problem_bank()
+
+# Intentionally incorrect / incomplete SQL sequences for autocomplete training.
+# Kept separate so the original bank can remain "all complete + grammar-valid".
+INCORRECT_TRUNCATION_BANK, INCORRECT_CORRUPTION_BANK = generate_incorrect_problem_bank(PROBLEM_BANK, seed=0)
+INCORRECT_PROBLEM_BANK = INCORRECT_TRUNCATION_BANK + INCORRECT_CORRUPTION_BANK

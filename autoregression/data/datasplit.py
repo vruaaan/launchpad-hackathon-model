@@ -47,7 +47,11 @@ assumed.
 import itertools
 import random
 from collections import defaultdict
-from autoregression.data.problembank2 import SIMPLE_SUBQUERY_POOL
+from autoregression.data.problembank2 import (
+    INCORRECT_CORRUPTION_BANK,
+    INCORRECT_TRUNCATION_BANK,
+    SIMPLE_SUBQUERY_POOL,
+)
 from autoregression.data.dataprep import EOS_ID, SOS_ID, TOKEN_TO_ID, flatten
 
 import torch
@@ -279,6 +283,7 @@ def verify_balance(train_tagged):
               f"{'(balanced)' if balanced else '(NOT balanced!)'}")
 
 training_set, validation_set, ood_by_knob, ood_compound, train_tagged_all = build_multi_knob_split()
+valid_training_set = list(training_set)
 print(f"train:{len(training_set)} problems")
 print(f"interp_val: {len(validation_set)} problems")
 for knob, probs in ood_by_knob.items():
@@ -287,5 +292,133 @@ print(f"ood_compound: {len(ood_compound)} problems (2+ knobs novel at once)\n")
 verify_balance(train_tagged_all)
 
 
-training_tensors = to_token_seq(training_set)
+INCLUDE_INCORRECT = False
+INCLUDE_TRUNCATIONS = True
+TRUNCATION_MAX = None  # set to an int to cap how many legal prefixes are added
+INCORRECT_SEED = 0
+
+if INCLUDE_INCORRECT:
+    raise ValueError(
+        "Hard incorrect corruptions are intentionally excluded from normal LM training. "
+        "Use INCLUDE_TRUNCATIONS for legal incomplete prefixes."
+    )
+
+if INCLUDE_TRUNCATIONS:
+    rng = random.Random(INCORRECT_SEED)
+    truncations = list(INCORRECT_TRUNCATION_BANK)
+    rng.shuffle(truncations)
+    if TRUNCATION_MAX is not None:
+        truncations = truncations[:TRUNCATION_MAX]
+    training_set = list(training_set) + truncations
+    print(f"Added {len(truncations)} legal incomplete prefixes to training_set -> total {len(training_set)}")
+
+
+def make_cursor_problem(problem, cursor_pos):
+    flat = flatten(problem)
+    blocks = flat[:cursor_pos] + ["<CURSOR>"] + flat[cursor_pos:]
+    return make_problem(blocks)
+
+
+def build_cursor_training_examples(problems, k=3, seed=0):
+    """
+    Builds insertion-style LM examples from valid problems. A sequence like
+    SELECT <CURSOR> COLUMN FROM TABLE teaches COLUMN as the target after
+    <CURSOR>, while preserving the normal left-to-right loss everywhere else.
+    """
+    rng = random.Random(seed)
+    examples = []
+    for problem in problems:
+        flat = flatten(problem)
+        if not flat:
+            continue
+        positions = {0, len(flat)}
+        interior = list(range(1, len(flat)))
+        rng.shuffle(interior)
+        positions.update(interior[: max(0, k - len(positions))])
+        for cursor_pos in sorted(positions):
+            examples.append(make_cursor_problem(problem, cursor_pos))
+    return examples
+
+
+cursor_training_set = build_cursor_training_examples(valid_training_set, k=3, seed=0)
+print(f"Added {len(cursor_training_set)} cursor insertion examples")
+
+
+training_tensors = to_token_seq(training_set) + to_token_seq(cursor_training_set)
 validation_tensors = to_token_seq(validation_set)
+
+# ---------------------------------------------------------------------------
+# Extra evaluation sets for autocomplete robustness.
+# ---------------------------------------------------------------------------
+
+def build_prefix_next_token_pairs(problems, n_pairs=2000, seed=0, min_prefix_len=1):
+    """
+    Returns (prefix_inputs, next_token_ids) where each prefix input is a 1D
+    LongTensor beginning with SOS and ending at some cutoff inside the
+    flattened sequence; next_token_ids is a list of the true next token id.
+
+    This matches the autocomplete setting: given an incomplete prefix, score
+    whether the model ranks the correct next token highly.
+    """
+    rng = random.Random(seed)
+    prefix_inputs = []
+    next_token_ids = []
+
+    for _ in range(n_pairs):
+        problem = rng.choice(problems)
+        flat = flatten(problem)
+        if len(flat) <= 1:
+            continue
+        cut = rng.randrange(max(1, min_prefix_len), len(flat))
+        prefix = flat[:cut]
+        next_tok = flat[cut]
+        prefix_ids = torch.tensor([SOS_ID] + [TOKEN_TO_ID[t] for t in prefix], dtype=torch.long)
+        prefix_inputs.append(prefix_ids)
+        next_token_ids.append(TOKEN_TO_ID[next_tok])
+
+    return prefix_inputs, next_token_ids
+
+
+# Prefix eval: use truncations (incomplete-but-sql-ish) for realism.
+incorrect_prefix_inputs, incorrect_prefix_next_ids = build_prefix_next_token_pairs(
+    INCORRECT_TRUNCATION_BANK,
+    n_pairs=2000,
+    seed=0,
+    min_prefix_len=1,
+)
+
+
+def build_cursor_next_token_pairs(problems, n_pairs=2000, seed=1):
+    """
+    Returns (cursor_inputs, next_token_ids) where each input ends with
+    <CURSOR>, and next_token_ids is the token that was originally at that
+    cursor position.
+    """
+    rng = random.Random(seed)
+    cursor_inputs = []
+    next_token_ids = []
+
+    for _ in range(n_pairs):
+        problem = rng.choice(problems)
+        flat = flatten(problem)
+        if not flat:
+            continue
+        cursor_pos = rng.randrange(0, len(flat))
+        prefix = flat[:cursor_pos] + ["<CURSOR>"]
+        next_tok = flat[cursor_pos]
+        prefix_ids = torch.tensor([SOS_ID] + [TOKEN_TO_ID[t] for t in prefix], dtype=torch.long)
+        cursor_inputs.append(prefix_ids)
+        next_token_ids.append(TOKEN_TO_ID[next_tok])
+
+    return cursor_inputs, next_token_ids
+
+
+cursor_prefix_inputs, cursor_prefix_next_ids = build_cursor_next_token_pairs(
+    validation_set,
+    n_pairs=2000,
+    seed=1,
+)
+
+# Corruption eval: perplexity over the corrupted sequences themselves (distribution-shift stress test).
+incorrect_corruption_tensors = to_token_seq(INCORRECT_CORRUPTION_BANK)
+

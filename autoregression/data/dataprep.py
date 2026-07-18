@@ -9,12 +9,15 @@ from autoregression.data.problembank import BLOCK_TYPES
 # ---------------------------------------------------------------------------
 # Vocabulary: block types + three special tokens.
 # ---------------------------------------------------------------------------
-SPECIALS = ["<PAD>", "<SOS>", "<EOS>"]
+SPECIALS = ["<PAD>", "<SOS>", "<EOS>", "<CURSOR>"]
 TOKENS = SPECIALS + list(BLOCK_TYPES)
 N_TOKENS = len(TOKENS)
 TOKEN_TO_ID = {tok: i for i, tok in enumerate(TOKENS)}
 ID_TO_TOKEN = {i: tok for tok, i in TOKEN_TO_ID.items()}
-PAD_ID, SOS_ID, EOS_ID = TOKEN_TO_ID["<PAD>"], TOKEN_TO_ID["<SOS>"], TOKEN_TO_ID["<EOS>"]
+PAD_ID = TOKEN_TO_ID["<PAD>"]
+SOS_ID = TOKEN_TO_ID["<SOS>"]
+EOS_ID = TOKEN_TO_ID["<EOS>"]
+CURSOR_ID = TOKEN_TO_ID["<CURSOR>"]
 
 
 def flatten(problem):
@@ -26,7 +29,11 @@ def flatten(problem):
     for i, tok in enumerate(blocks):
         out.append(tok)
         if tok == "SUBQUERY_START":
-            out.extend(flatten(subqueries[i]))
+            # For intentionally incorrect/incomplete problems, a SUBQUERY_START
+            # token may appear without a corresponding nested node.
+            nested = subqueries.get(i)
+            if nested is not None:
+                out.extend(flatten(nested))
     return out
 
 def normalise_data(problem):
