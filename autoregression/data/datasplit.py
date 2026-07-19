@@ -59,8 +59,10 @@ SELECT_ITEMS = [
     ["COLUMN"],
     ["DISTINCT", "COLUMN"],
     ["STAR"],
+    ["SELECT_ITEM"],
     ["AGG_FUNC", "COLUMN"],
     ["AGG_FUNC", "STAR"],
+    ["COLUMN", "MATH_OP", "VALUE"],
 ]
  
 JOINS = [
@@ -73,6 +75,9 @@ JOINS = [
 WHERE_VARIANTS = [
     None,
     ["WHERE", "COLUMN", "OPERATOR", "VALUE"],
+    ["WHERE", "COLUMN", "OPERATOR", "ABS_DATE"],
+    ["WHERE", "COLUMN", "BETWEEN", "VALUE", "AND", "VALUE"],
+    ["WHERE", "COLUMN", "BETWEEN", "ABS_DATE", "AND", "ABS_DATE"],
     ["WHERE", "COLUMN", "IS_NULL"],
     ["WHERE", "COLUMN", "IS_NOT_NULL"],
     ["WHERE", "COLUMN", "LIKE", "VALUE"],
@@ -134,8 +139,8 @@ KNOBS = {
 }
 
 HELD_OUT = {
-    "select": {4},     # ["AGG_FUNC", "STAR"]
-    "where": {6, 7},   # AND-chained, OR-chained conditions
+    "select": {5},     # ["AGG_FUNC", "STAR"]
+    "where": {9, 10},  # AND-chained, OR-chained conditions
     "groupby": {1},    # bare "GROUP_BY COLUMN", no HAVING
     "orderby": {1},    # bare "ORDER_BY COLUMN", no ASC/DESC
     "limit": {1},      # bare "LIMIT", no OFFSET
@@ -205,6 +210,14 @@ def generate_subquery_with_tags():
                         nested = rng.choice(SIMPLE_SUBQUERY_POOL)
                         problem = make_problem(blocks, subqueries={pos: nested})
                         tags = {"select": si, "join": ji, "where": "subquery",
+                                "groupby": gi, "orderby": oi, "limit": li}
+                        tagged.append((problem, tags))
+                        where = ["WHERE", "EXISTS", "SUBQUERY_START", "SUBQUERY_END"]
+                        blocks = assemble(select_item, join, where, groupby, orderby, limit)
+                        pos = blocks.index("SUBQUERY_START")
+                        nested = rng.choice(SIMPLE_SUBQUERY_POOL)
+                        problem = make_problem(blocks, subqueries={pos: nested})
+                        tags = {"select": si, "join": ji, "where": "exists_subquery",
                                 "groupby": gi, "orderby": oi, "limit": li}
                         tagged.append((problem, tags))
     return tagged

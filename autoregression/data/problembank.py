@@ -35,6 +35,11 @@ HORIZONTAL_BLOCKS = [
     "ON",
     "SUBQUERY_START",     # opens a nested query -- pushes a new frame
     "SUBQUERY_END",       # closes it -- placed after the nested frame auto-pops
+    "BETWEEN",
+    "EXISTS",
+    "SELECT_ITEM",
+    "MATH_OP",
+    "ABS_DATE",
 ]
 
 
@@ -57,15 +62,19 @@ TRANSITIONS = {
     "select_open": {
         "DISTINCT": "select_after_distinct",
         "AGG_FUNC": "select_after_agg",
-        "COLUMN": "select_item_done",
+        "COLUMN": "select_after_column",
         "STAR": "select_item_done",
+        "SELECT_ITEM": "select_item_done",
     },
     "select_after_distinct": {
         "AGG_FUNC": "select_after_agg",
-        "COLUMN": "select_item_done",
+        "COLUMN": "select_after_column",
         "STAR": "select_item_done",
+        "SELECT_ITEM": "select_item_done",
     },
     "select_after_agg": {"COLUMN": "select_item_done", "STAR": "select_item_done"},
+    "select_after_column": {"MATH_OP": "select_after_math_op", "AS": "select_after_as", "FROM": "after_from"},
+    "select_after_math_op": {"VALUE": "select_item_done", "ABS_DATE": "select_item_done"},
 
     # Optional alias for the SELECT item (e.g., COLUMN AS ALIAS)
     "select_item_done": {"AS": "select_after_as", "FROM": "after_from"},
@@ -101,7 +110,7 @@ TRANSITIONS = {
     },
 
     # --- WHERE condition automaton ---
-    "where_cond_open": {"NOT": "where_after_not", "COLUMN": "where_cond_lhs_done"},
+    "where_cond_open": {"NOT": "where_after_not", "COLUMN": "where_cond_lhs_done", "EXISTS": "where_exists"},
     "where_after_not": {"COLUMN": "where_cond_lhs_done"},
     "where_cond_lhs_done": {
         "OPERATOR": "where_cond_op_done",
@@ -109,10 +118,16 @@ TRANSITIONS = {
         "IS_NOT_NULL": "where_cond_done",
         "LIKE": "where_cond_op_done",
         "IN": "where_cond_in",
+        "BETWEEN": "where_between_low",
     },
-    "where_cond_op_done": {"VALUE": "where_cond_done"},
+    "where_cond_op_done": {"VALUE": "where_cond_done", "ABS_DATE": "where_cond_done"},
     "where_cond_in": {"SUBQUERY_START": "where_cond_subquery_open"},
     "where_cond_subquery_open": {"SUBQUERY_END": "where_cond_done"},
+    "where_between_low": {"VALUE": "where_between_and", "ABS_DATE": "where_between_and"},
+    "where_between_and": {"AND": "where_between_high"},
+    "where_between_high": {"VALUE": "where_cond_done", "ABS_DATE": "where_cond_done"},
+    "where_exists": {"SUBQUERY_START": "where_exists_subquery_open"},
+    "where_exists_subquery_open": {"SUBQUERY_END": "where_cond_done"},
     "where_cond_done": {
         "AND": "where_cond_open",
         "OR": "where_cond_open",
@@ -131,7 +146,7 @@ TRANSITIONS = {
     "having_cond_open": {"AGG_FUNC": "having_after_agg", "COLUMN": "having_cond_lhs_done"},
     "having_after_agg": {"COLUMN": "having_cond_lhs_done"},
     "having_cond_lhs_done": {"OPERATOR": "having_cond_op_done"},
-    "having_cond_op_done": {"VALUE": "having_cond_done"},
+    "having_cond_op_done": {"VALUE": "having_cond_done", "ABS_DATE": "having_cond_done"},
     "having_cond_done": {
         "AND": "having_cond_open",
         "OR": "having_cond_open",
@@ -172,8 +187,10 @@ SELECT_ITEMS = [ # things that can come after ITEMS
     ["COLUMN"],
     ["DISTINCT", "COLUMN"],
     ["STAR"],
+    ["SELECT_ITEM"],
     ["AGG_FUNC", "COLUMN"],
     ["AGG_FUNC", "STAR"],
+    ["COLUMN", "MATH_OP", "VALUE"],
 ]
 
 JOINS = [ # things that can come after JOIN
@@ -184,6 +201,9 @@ JOINS = [ # things that can come after JOIN
 WHERE_VARIANTS = [
     None,
     ["WHERE", "COLUMN", "OPERATOR", "VALUE"],
+    ["WHERE", "COLUMN", "OPERATOR", "ABS_DATE"],
+    ["WHERE", "COLUMN", "BETWEEN", "VALUE", "AND", "VALUE"],
+    ["WHERE", "COLUMN", "BETWEEN", "ABS_DATE", "AND", "ABS_DATE"],
     ["WHERE", "COLUMN", "IS_NULL"],
     ["WHERE", "COLUMN", "IS_NOT_NULL"],
     ["WHERE", "COLUMN", "LIKE", "VALUE"],
@@ -237,6 +257,13 @@ def generate_problem_bank():
     for select_item, join, groupby, orderby, limit in itertools.product(
         SELECT_ITEMS, JOINS, GROUPBY_VARIANTS, ORDERBY_VARIANTS[:2], LIMIT_VARIANTS[:2]):
         where = ["WHERE", "COLUMN", "IN", "SUBQUERY_START", "SUBQUERY_END"]
+        blocks = assemble(select_item, join, where, groupby, orderby, limit)
+        subquery_pos = blocks.index("SUBQUERY_START")
+        nested = random.choice(subquery_pool)
+        final.append(make_problem(blocks, subqueries={subquery_pos: nested}))
+    for select_item, join, groupby, orderby, limit in itertools.product(
+        SELECT_ITEMS, JOINS, GROUPBY_VARIANTS, ORDERBY_VARIANTS[:2], LIMIT_VARIANTS[:2]):
+        where = ["WHERE", "EXISTS", "SUBQUERY_START", "SUBQUERY_END"]
         blocks = assemble(select_item, join, where, groupby, orderby, limit)
         subquery_pos = blocks.index("SUBQUERY_START")
         nested = random.choice(subquery_pool)

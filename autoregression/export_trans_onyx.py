@@ -27,7 +27,7 @@ def find_weights(default_path):
 
 
 def main():
-    weights_path = repo_root / "transformer.pth"
+    weights_path = repo_root / "autoregression" / "trans.pth"
     onnx_path = repo_root / "transformer.onnx"
     single_file_onnx_path = repo_root / "transformer_single.onnx"
     max_len = 64
@@ -54,10 +54,11 @@ def main():
         input_names=["input_ids"],
         output_names=["logits"],
         dynamic_axes={
-            "input_ids": {0: "batch", 1: "time"},
-            "logits": {0: "batch", 1: "time"},
+            "input_ids": {0: "batch"},
+            "logits": {0: "batch"},
         },
         opset_version=17,
+        dynamo=False,
     )
 
     try:
